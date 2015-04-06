@@ -384,7 +384,7 @@ response times, a problem can be mitigated by setting `basic_quorum` to
 
 Setting `notfound_ok` to `false` on a request (or as a bucket property)
 is likely to introduce additional latency. If you read a non-existent
-key, Riak will check all 3 responsible vnodes for the value before
+key, Riak will check all N responsible vnodes for the value before
 returning `not found` instead of checking just one.
 
 This latency problem can be mitigated by setting `basic_quorum` to
