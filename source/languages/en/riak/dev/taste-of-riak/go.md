@@ -8,21 +8,19 @@ audience: beginner
 keywords: [developers, client, go]
 ---
 
-If you haven't set up a Riak cluster, please visit the [[Prerequisites|Taste
-of Riak: Prerequisites]] first.
+If you haven't set up a Riak Node and started it, please visit the
+[[Prerequisites|Taste of Riak: Prerequisites]] first and ensure you have
+[a working installation of Go](http://golang.org/doc/install).
 
-To try this flavor of Riak, [a working installation of Go](http://golang.org/doc/install) is required.
+## Client Setup
 
-### Client Setup
-
-[riakpbc](https://github.com/mrb/riakpbc) is a community-maintained Riak
-client library for Go.
-
-First, install riakpbc:
+First install the [Riak Go client](https://github.com/basho/riak-go-client):
 
 ```bash
-$ go get github.com/mrb/riakpbc
+go get github.com/basho/riak-go-client
 ```
+
+<< Do we still want to use this taste_of_riak.go thing?: >>
 
 Next, create the following directory structure in your `GOPATH` and download [taste_of_riak.go](https://github.com/basho/basho_docs/raw/master/source/data/taste_of_riak.go):
 
@@ -54,154 +52,125 @@ Creating, reading, and deleting complex objects...
 true
 ```
 
-Now we'll walk through the code to see what it actually does at each step.
-
-### Creating Objects
-
-The first thing to do is create a new client instance targeting each of the
-Riak nodes in your cluster. If you happen to have the cluster behind a load
-balancer, simply provide the IP and port your load balancer is listening on.
+If you are using a single local Riak node, use the following to create a
+new client instance, assuming that the node is running on `localhost`
+port 8087:
 
 ```go
-client := riakpbc.NewClient([]string{
-    "127.0.0.1:10017",
-    "127.0.0.1:10027",
-    "127.0.0.1:10037"
-})
+...
 ```
 
-From there, we make a connection to all of the nodes (using `Dial`):
+...
+
+## Creating Objects
+
+First, let’s create a few objects and a bucket to keep them in.
 
 ```go
-if err := client.Dial(); err != nil {
-    log.Fatalf("Dialing failed: %v", err)
-}
+...
 ```
 
-Now, let's store the integer `1` with a key of `one`:
+In this first example we have stored the integer 1 with the lookup key
+of `one`. Next, let’s store a simple string value of `two` with a
+matching key.
 
 ```go
-if _, err := riak.StoreObject("test", "one", 1); err != nil {
-    log.Print(err.Error())
-}
+...
 ```
 
-Next, let’s store a simple string value of `two` with a matching key of `two`.
+Finally, let’s store a bit of JSON. You will probably
+recognize the pattern by now:
 
 ```go
-if _, err := client.StoreObject("test", "two", "two"); err != nil {
-    log.Print(err.Error())
-}
+...
 ```
 
-### Reading Objects
+## Reading Objects
 
-Now that we have a few objects stored, let’s retrieve them and make sure they
-return the values we expect.
+Now that we have a few objects stored, let’s retrieve them and make sure
+they contain the values we expect.
+
+Requesting the objects by key:
 
 ```go
-one, err := client.FetchObject("test", "one")
-if err != nil {
-    log.Print(err.Error())
-}
-fmt.Println(string(one.GetContent()[0].GetValue()))
-
-one_value, err := strconv.ParseInt(string(one.GetContent()[0].GetValue()), 10, 64)
-if err != nil {
-    log.Print(err.Error())
-}
-fmt.Println(one_value == 1)
-
-two, err := client.FetchObject("test", "two")
-if err != nil {
-    log.Print(err.Error())
-}
-fmt.Println(string(two.GetContent()[0].GetValue()))
-fmt.Println(string(two.GetContent()[0].GetValue()) == "two")
+...
 ```
 
-<div class="note">
-<div class="title">strconv.ParseInt</div>
-
-In order to parse the integer value back from a `[]byte`, we use Go's
-[strconv.ParseInt](http://golang.org/pkg/strconv/#ParseInt).
-
-The second argument to `ParseInt` is `10` (signifying base 10) and the third
-is `64` (for the bit size).
-
-</div>
-
-### Deleting Objects
-
-To clean up after ourselves, here's how to delete data:
+Converting to JSON to compare a string key to a symbol
+key:
 
 ```go
-if _, err := client.DeleteObject("test", "one"); err != nil {
-    log.Print(err.Error())
-}
-
-if _, err := client.DeleteObject("test", "two"); err != nil {
-    log.Print(err.Error())
-}
+...
 ```
 
-### Working with Complex Objects
+## Updating Objects
 
-Since the world is a little more complicated than simple integers and strings,
-let’s see how we can work with more complex objects.
+While some data may be static, other forms of data need to be
+updated. 
 
-How about a Go `struct`!
-
-First, ensure that you have the `ExampleData` `struct` definition:
+Let’s update some values:
 
 ```go
-type ExampleData struct {
-    Three int `json:"three"`
+...
+```
+
+## Deleting Objects
+
+As a last step, we’ll demonstrate how to delete data. You’ll see that
+the delete message can be called either against the bucket or the
+object.
+
+```go
+...
+```
+
+## Working With Complex Objects
+
+Since the world is a little more complicated than simple integers and
+bits of strings, let’s see how we can work with more complex objects.
+
+Take, for example, this <<Go struct/data>> that encapsulates some knowledge about
+a book:
+
+```go
+book = {
+    :isbn => '1111979723',
+    :title => 'Moby Dick',
+    :author => 'Herman Melville',
+    :body => 'Call me Ishmael. Some years ago...',
+    :copies_owned => 3
 }
 ```
 
-This `struct` contains an integer property `Three` that will be serialized as
-JSON (because of the `json` tag).
-
-Next, create a coder that marshalls/unmarshalls JSON and associate it with a
-new client:
+All right, so we have some information about our Moby Dick collection
+that we want to save. Storing this to Riak should look familiar by now:
 
 ```go
-coder := riakpbc.NewCoder("json", riakpbc.JsonMarshaller, riakpbc.JsonUnmarshaller)
-coder_client := riakpbc.NewClientWithCoder([]string{
-    "127.0.0.1:10017",
-    "127.0.0.1:10027",
-    "127.0.0.1:10037",
-}, coder)
+...
 ```
 
-After connecting to each node (using `Dial`) and setting a client ID, create
-an `ExampleData` `struct` and store it in Riak:
+If we fetch our book back and print the data:
 
 ```go
-data := ExampleData{
-    Three: 3,
-}
-if _, err := coder_client.StoreStruct("test", "three", &data); err != nil {
-    log.Print(err.Error())
-}
+...
 ```
 
-Retrieving a property from a `struct` looks like this:
+The result is:
+
+```
+...
+```
+
+Now, let’s delete the book:
 
 ```go
-out := &ExampleData{}
-if _, err := coder_client.FetchStruct("test", "three", out); err != nil {
-    log.Print(err.Error())
-}
-fmt.Println(out.Three)
-fmt.Println(out.Three == 3)
+...
 ```
 
-Finally, let’s clean up our mess:
+## Next Steps
 
-```go
-if _, err := client.DeleteObject("test", "three"); err != nil {
-    log.Print(err.Error())
-}
-```
+More complex use cases can be composed from these initial create, read,
+update, and delete (CRUD) operations. [[In the next chapter|Taste of
+Riak: Querying]] we look at how to store and query more complicated and
+interconnected data.
+
