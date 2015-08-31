@@ -166,7 +166,6 @@ Finally, the third object we stored was a bit of JSON:
 }
 ```
 
-
 ## Reading Objects
 
 Now that we have a few objects stored, let’s retrieve them and make sure
