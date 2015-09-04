@@ -5,7 +5,7 @@ version: 1.4.0+
 document: guide
 toc: true
 audience: beginner
-keywords: [developers, client, go]
+keywords: [developers, client, go, golang]
 ---
 
 If you haven't set up a Riak Node and started it, please visit the
