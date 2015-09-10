@@ -16,10 +16,117 @@ You can also download the code for this chapter at
 [Github](https://github.com/basho/taste-of-riak/tree/master/go/ch03/models).
 </div>
 
+```model.go
+package models
 
-```go
+type Model interface {
+  GetId() string
+  SetId(id string)
+}
 
+type modelImpl struct {
+  id string
+}
+
+func (m *modelImpl) SetId(id string) {
+  m.id = id
+}
 ```
+
+Our user model:
+
+```user.go
+package models
+
+type User struct {
+  modelImpl
+  UserName string
+  FullName string
+  Email    string
+}
+
+func NewUser(userName, fullName, email string) *User {
+  u := &User{
+    UserName: userName,
+    FullName: fullName,
+    Email:    email,
+  }
+  u.SetId(userName)
+  return u
+}
+
+func (u *User) GetId() string {
+  return u.UserName
+}
+```
+
+And our message model:
+
+```msg.go
+package models
+
+import (
+  "fmt"
+  "time"
+
+  util "github.com/basho/taste-of-riak/go/util"
+)
+
+type Msg struct {
+  modelImpl
+  Sender    string
+  Recipient string
+  Text      string
+  Created   time.Time
+}
+
+func NewMsg(sender, recipient, text string) *Msg {
+  m := &Msg{
+    Sender:    sender,
+    Recipient: recipient,
+    Text:      text,
+    Created:   time.Now(),
+  }
+  m.SetId(m.GetId())
+  return m
+}
+
+func (m *Msg) GetId() string {
+  return fmt.Sprintf("%s_%v", m.Sender, util.Iso8601(m.Created))
+}
+```
+
+Our timeline model:
+
+```timeline.go
+package models
+
+type Timeline struct {
+  modelImpl
+  MsgKeys []string
+}
+
+type TimelineType byte
+
+const (
+  TimelineType_INBOX TimelineType = iota
+  TimelineType_SENT
+)
+
+func NewTimeline(id string) *Timeline {
+  t := &Timeline{}
+  t.id = id
+  return t
+}
+
+func (t *Timeline) AddMsg(msgKey string) {
+  t.MsgKeys = append(t.MsgKeys, msgKey)
+}
+
+func (t *Timeline) GetId() string {
+  return t.id
+}
+````
 
 We'll be using the bucket `Users` to store our data. We won't be [[using
 bucket types]] here, so we don't need to specify one.
@@ -83,20 +190,332 @@ Now that we've figured out our object model, let's write some modules to
 act as repositories that will help us create and work with these records
 in Riak:
 
-```go
-...
+```repository.go
+package repositories
+
+import (
+  "encoding/json"
+  "errors"
+
+  riak "github.com/basho/riak-go-client"
+  models "github.com/basho/taste-of-riak/go/ch03/models"
+)
+
+var ErrUnexpectedSiblings = errors.New("Unexpected siblings in response!")
+
+type Repository interface {
+  Get(key string, notFoundOk bool) (models.Model, error)
+  Save(models.Model) (models.Model, error)
+  getBucketName() string
+  getModel() models.Model
+  getClient() *riak.Client
+}
+
+type repositoryImpl struct {
+  client *riak.Client
+}
+
+func (ri *repositoryImpl) getClient() *riak.Client {
+  return ri.client
+}
+
+func get(r Repository, key string, notFoundOk bool) (models.Model, error) {
+  client := r.getClient()
+  bucket := r.getBucketName()
+  cmd, err := riak.NewFetchValueCommandBuilder().
+    WithBucket(bucket).
+    WithKey(key).
+    WithNotFoundOk(notFoundOk).
+    Build()
+  if err != nil {
+    return nil, err
+  }
+  if err = client.Execute(cmd); err != nil {
+    return nil, err
+  }
+
+  fcmd := cmd.(*riak.FetchValueCommand)
+
+  if notFoundOk && len(fcmd.Response.Values) == 0 {
+    return nil, nil
+  }
+
+  if len(fcmd.Response.Values) > 1 {
+    // Siblings present that need resolution
+    // Here we'll just return an unexpected error
+    return nil, ErrUnexpectedSiblings
+  } else {
+    return buildModel(r.getModel(), fcmd.Response.Values[0])
+  }
+}
+
+func save(r Repository, m models.Model) (models.Model, error) {
+  client := r.getClient()
+  bucket := r.getBucketName()
+  key := m.GetId()
+
+  cmd, err := riak.NewFetchValueCommandBuilder().
+    WithBucket(bucket).
+    WithKey(key).
+    WithNotFoundOk(true).
+    Build()
+  if err != nil {
+    return nil, err
+  }
+  if err = client.Execute(cmd); err != nil {
+    return nil, err
+  }
+
+  modelJson, err := json.Marshal(m)
+  if err != nil {
+    return nil, err
+  }
+
+  var objToInsertOrUpdate *riak.Object
+  fcmd := cmd.(*riak.FetchValueCommand)
+  if len(fcmd.Response.Values) > 1 {
+    // Siblings present that need resolution
+    // Here we'll just assume the first sibling is the "correct" one
+    // with which to update with the new Model data
+    // A conflict resolver can also be part of the options to fetchValue above
+    objToInsertOrUpdate = fcmd.Response.Values[0]
+    objToInsertOrUpdate.Value = modelJson
+  } else {
+    objToInsertOrUpdate = &riak.Object{
+      Bucket:      bucket,
+      Key:         key,
+      ContentType: "application/json",
+      Charset:     "utf8",
+      Value:       modelJson,
+    }
+  }
+
+  cmd, err = riak.NewStoreValueCommandBuilder().
+    WithContent(objToInsertOrUpdate).
+    WithReturnBody(true).
+    Build()
+  if err != nil {
+    return nil, err
+  }
+  if err = client.Execute(cmd); err != nil {
+    return nil, err
+  }
+
+  scmd := cmd.(*riak.StoreValueCommand)
+  if len(scmd.Response.Values) > 1 {
+    return nil, ErrUnexpectedSiblings
+  }
+  obj := scmd.Response.Values[0]
+  return buildModel(r.getModel(), obj)
+}
+
+func buildModel(m models.Model, obj *riak.Object) (models.Model, error) {
+  err := json.Unmarshal(obj.Value, m)
+  m.SetId(obj.Key)
+  return m, err
+}
 ```
 
-<br />
+<br/>
 
-```go
-...
+```user-repository.go
+package repositories
+
+import (
+  riak "github.com/basho/riak-go-client"
+  models "github.com/basho/taste-of-riak/go/ch03/models"
+)
+
+type UserRepository struct {
+  repositoryImpl
+}
+
+func NewUserRepository(c *riak.Client) *UserRepository {
+  r := &UserRepository{}
+  r.client = c
+  return r
+}
+
+func (u *UserRepository) Get(key string, notFoundOk bool) (models.Model, error) {
+  return get(u, key, notFoundOk)
+}
+
+func (u *UserRepository) Save(m models.Model) (models.Model, error) {
+  return save(u, m)
+}
+
+func (u *UserRepository) getBucketName() string {
+  return "Users"
+}
+
+func (u *UserRepository) getModel() models.Model {
+  return &models.User{}
+}
+```
+
+<br/>
+
+```msg-repository.go
+package repositories
+
+import (
+  riak "github.com/basho/riak-go-client"
+  models "github.com/basho/taste-of-riak/go/ch03/models"
+)
+
+type MsgRepository struct {
+  repositoryImpl
+}
+
+func NewMsgRepository(c *riak.Client) *MsgRepository {
+  m := &MsgRepository{}
+  m.client = c
+  return m
+}
+
+func (m *MsgRepository) Get(key string, notFoundOk bool) (models.Model, error) {
+  return get(m, key, notFoundOk)
+}
+
+func (m *MsgRepository) Save(model models.Model) (models.Model, error) {
+  return save(m, model)
+}
+
+func (m *MsgRepository) getBucketName() string {
+  return "Msgs"
+}
+
+func (m *MsgRepository) getModel() models.Model {
+  return &models.Msg{}
+}
+```
+
+<br/>
+
+```timeline-repository.go
+package repositories
+
+import (
+  riak "github.com/basho/riak-go-client"
+  models "github.com/basho/taste-of-riak/go/ch03/models"
+)
+
+type TimelineRepository struct {
+  repositoryImpl
+}
+
+func NewTimelineRepository(c *riak.Client) *TimelineRepository {
+  t := &TimelineRepository{}
+  t.client = c
+  return t
+}
+
+func (t *TimelineRepository) Get(key string, notFoundOk bool) (models.Model, error) {
+  return get(t, key, notFoundOk)
+}
+
+func (t *TimelineRepository) Save(m models.Model) (models.Model, error) {
+  return save(t, m)
+}
+
+func (t *TimelineRepository) getBucketName() string {
+  return "Timelines"
+}
+
+func (t *TimelineRepository) getModel() models.Model {
+  return &models.Timeline{}
+}
 ```
 
 Finally, let's test them:
 
 ```go
-...
+package main
+
+import (
+  "time"
+
+  mgrs "github.com/basho/taste-of-riak/go/ch03/managers"
+  models "github.com/basho/taste-of-riak/go/ch03/models"
+  repos "github.com/basho/taste-of-riak/go/ch03/repositories"
+
+  riak "github.com/basho/riak-go-client"
+  util "github.com/basho/taste-of-riak/go/util"
+)
+
+func main() {
+  var err error
+
+  // un-comment-out to enable debug logging
+  // riak.EnableDebugLogging = true
+
+  util.Log.Println("Starting Client")
+
+  o := &riak.NewClientOptions{
+    RemoteAddresses: util.GetRiakAddresses(),
+  }
+
+  var client *riak.Client
+  client, err = riak.NewClient(o)
+  if err != nil {
+    util.ErrExit(err)
+  }
+
+  defer func() {
+    if err := client.Stop(); err != nil {
+      util.ErrExit(err)
+    }
+  }()
+
+  userRepo := repos.NewUserRepository(client)
+  msgRepo := repos.NewMsgRepository(client)
+  timelineRepo := repos.NewTimelineRepository(client)
+  timelineMgr := mgrs.NewTimelineManager(timelineRepo, msgRepo)
+
+  util.Log.Println("Creating and saving users")
+
+  marleen := models.NewUser("marleenmgr", "Marleen Manager", "marleen.manager@basho.com")
+  joe := models.NewUser("joeuser", "Joe User", "joe.user@basho.com")
+
+  var m models.Model
+  m, err = userRepo.Save(marleen)
+  if err != nil {
+    util.ErrExit(err)
+  }
+  marleen = m.(*models.User)
+
+  m, err = userRepo.Save(joe)
+  if err != nil {
+    util.ErrExit(err)
+  }
+  joe = m.(*models.User)
+
+  util.Log.Println("Posting message")
+
+  msg := models.NewMsg(marleen.UserName, joe.UserName, "Welcome to the company!")
+  if terr := timelineMgr.PostMsg(msg); terr != nil {
+    util.ErrExit(terr)
+  }
+
+  util.Log.Println("Getting Joe's inbox for today")
+
+  // Get Joe's inbox for today, get first message
+  now := time.Now()
+  joe_tl, terr := timelineMgr.GetTimeline(joe.UserName, models.TimelineType_INBOX, now)
+  if terr != nil {
+    util.ErrExit(terr)
+  }
+
+  for _, msgKey := range joe_tl.MsgKeys {
+    m, merr := msgRepo.Get(msgKey, false)
+    if merr != nil {
+      util.ErrExit(merr)
+    }
+    tl_msg := m.(*models.Msg)
+    util.Log.Println("From: ", tl_msg.Sender)
+    util.Log.Println("Msg: ", tl_msg.Text)
+  }
+}
 ```
 
 As you can see, the repository pattern helps us with a few things:
